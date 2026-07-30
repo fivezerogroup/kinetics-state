@@ -1,4 +1,4 @@
-import type { KineticsStateOptions, StateEngine } from '../types';
+import type { KineticsStateOptions, StateEngine } from "../types";
 
 /**
  * Singleton store shared among all MemoryDriver instances.
@@ -17,27 +17,27 @@ const globalMemoryStore = new Map<string, unknown>();
  * @template T - The type of data being stored.
  */
 export class MemoryDriver<T = unknown> implements StateEngine<T> {
-  private readonly prefix: string;
+	private readonly prefix: string;
 
-  constructor(prefix: string = 'kinetics') {
-    this.prefix = prefix;
-  }
+	constructor(prefix: string = "kinetics") {
+		this.prefix = prefix;
+	}
 
-  private buildKey(key: string): string {
-    return `${this.prefix}:${key}`;
-  }
+	private buildKey(key: string): string {
+		return `${this.prefix}:${key}`;
+	}
 
-  read(key: string): T | null {
-    const fullKey = this.buildKey(key);
-    if (!globalMemoryStore.has(fullKey)) return null;
-    return globalMemoryStore.get(fullKey) as T;
-  }
+	read(key: string): T | null {
+		const fullKey = this.buildKey(key);
+		if (!globalMemoryStore.has(fullKey)) return null;
+		return globalMemoryStore.get(fullKey) as T;
+	}
 
-  write(key: string, value: T, _options: KineticsStateOptions<T>): void {
-    globalMemoryStore.set(this.buildKey(key), value);
-  }
+	write(key: string, value: T, _options: KineticsStateOptions<T>): void {
+		globalMemoryStore.set(this.buildKey(key), value);
+	}
 
-  remove(key: string): void {
-    globalMemoryStore.delete(this.buildKey(key));
-  }
+	remove(key: string): void {
+		globalMemoryStore.delete(this.buildKey(key));
+	}
 }
