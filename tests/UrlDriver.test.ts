@@ -1,20 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UrlDriver } from "../src/drivers/UrlDriver";
 
-// Mock @inertiajs/core agar tidak perlu Inertia app yang aktif
-vi.mock("@inertiajs/core", () => ({
-	router: {
-		visit: vi.fn(),
-	},
-}));
+// UrlDriver is now pure — it no longer calls router.visit().
+// We verify that history.replaceState() is called instead.
 
-import { router } from "@inertiajs/core";
+const replaceStateSpy = vi.spyOn(window.history, "replaceState");
 
 describe("UrlDriver", () => {
 	beforeEach(() => {
-		// Reset URL ke kondisi bersih sebelum setiap test
+		// Reset URL to clean state before each test
 		window.history.replaceState({}, "", "/");
-		vi.mocked(router.visit).mockClear();
+		replaceStateSpy.mockClear();
 	});
 
 	describe("read()", () => {
@@ -49,14 +45,20 @@ describe("UrlDriver", () => {
 	});
 
 	describe("write()", () => {
-		it("harus memanggil router.visit() dengan URL yang berisi key baru", () => {
+		it("harus memanggil history.replaceState() — bukan router.visit()", () => {
 			const driver = new UrlDriver<string>();
 			driver.write("q", "test-query", { driver: "url", defaultValue: "" });
 
-			expect(router.visit).toHaveBeenCalledTimes(1);
-			const calledUrl = vi.mocked(router.visit).mock.calls[0][0] as string;
-			expect(calledUrl).toContain("q=");
-			expect(decodeURIComponent(calledUrl)).toContain('"test-query"');
+			expect(replaceStateSpy).toHaveBeenCalledTimes(1);
+		});
+
+		it("harus menulis key ke URL via history.replaceState()", () => {
+			const driver = new UrlDriver<string>();
+			driver.write("q", "test-query", { driver: "url", defaultValue: "" });
+
+			const newUrl = window.location.search;
+			expect(newUrl).toContain("q=");
+			expect(decodeURIComponent(newUrl)).toContain('"test-query"');
 		});
 
 		it("harus men-serialize object ke JSON di URL", () => {
@@ -67,8 +69,9 @@ describe("UrlDriver", () => {
 				{ driver: "url", defaultValue: { page: 1 } },
 			);
 
-			const calledUrl = vi.mocked(router.visit).mock.calls[0][0] as string;
-			expect(decodeURIComponent(calledUrl)).toContain('{"page":2}');
+			expect(decodeURIComponent(window.location.search)).toContain(
+				'{"page":2}',
+			);
 		});
 
 		it("harus menggunakan custom serialize jika disediakan", () => {
@@ -79,8 +82,7 @@ describe("UrlDriver", () => {
 				serialize: (v) => String(v),
 			});
 
-			const calledUrl = vi.mocked(router.visit).mock.calls[0][0] as string;
-			expect(calledUrl).toContain("page=3");
+			expect(window.location.search).toContain("page=3");
 		});
 
 		it("harus menghapus key dari URL jika value adalah string kosong", () => {
@@ -88,36 +90,39 @@ describe("UrlDriver", () => {
 			const driver = new UrlDriver<string>();
 			driver.write("q", "", { driver: "url", defaultValue: "" });
 
-			const calledUrl = vi.mocked(router.visit).mock.calls[0][0] as string;
-			expect(calledUrl).not.toContain("q=");
+			expect(window.location.search).not.toContain("q=");
 		});
 
-		it("harus meneruskan inertiaOptions ke router.visit()", () => {
+		it("TIDAK boleh memanggil router.visit() secara langsung", () => {
+			// router.visit is now InertiaAdapter's responsibility
+			// UrlDriver must never import or call it directly
 			const driver = new UrlDriver<string>();
-			driver.write("q", "test", {
-				driver: "url",
-				defaultValue: "",
-				inertiaOptions: { preserveState: true, only: ["users"] },
-			});
 
-			const callArgs = vi.mocked(router.visit).mock.calls[0][1] as Record<
-				string,
-				unknown
-			>;
-			expect(callArgs.only).toEqual(["users"]);
+			// If UrlDriver internally called router.visit, this would throw
+			// because @inertiajs/core is not mocked in this test file.
+			expect(() =>
+				driver.write("q", "test", { driver: "url", defaultValue: "" }),
+			).not.toThrow();
 		});
 	});
 
 	describe("remove()", () => {
-		it("harus menghapus key dari URL dan memanggil router.visit()", () => {
-			window.history.replaceState({}, "", "/?q=%22hello%22&page=1");
+		it("harus menghapus key dari URL via history.replaceState()", () => {
+			window.history.replaceState({}, "", '/?q="hello"&page=1');
 			const driver = new UrlDriver();
 			driver.remove("q");
 
-			expect(router.visit).toHaveBeenCalledTimes(1);
-			const calledUrl = vi.mocked(router.visit).mock.calls[0][0] as string;
-			expect(calledUrl).not.toContain("q=");
-			expect(calledUrl).toContain("page=");
+			expect(replaceStateSpy).toHaveBeenCalledTimes(2); // 1x setup + 1x remove
+			expect(window.location.search).not.toContain("q=");
+			expect(window.location.search).toContain("page=");
+		});
+
+		it("harus menghasilkan URL bersih tanpa query string jika semua key dihapus", () => {
+			window.history.replaceState({}, "", "/?q=test");
+			const driver = new UrlDriver();
+			driver.remove("q");
+
+			expect(window.location.href).toBe("http://localhost:3000/");
 		});
 	});
 });

@@ -15,6 +15,7 @@
 - [Why kinetics-state?](#why-kinetics-state)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Architecture](#architecture)
 - [Drivers](#drivers)
   - [URL Driver](#url-driver)
   - [IndexedDB Driver](#indexeddb-driver)
@@ -22,6 +23,8 @@
   - [Driver Comparison](#driver-comparison)
 - [API Reference](#api-reference)
   - [`useKineticsState`](#usekineticsstatekey-options)
+  - [`StateManager`](#statemanager)
+  - [`InertiaAdapter`](#inertiaadapter)
   - [`createStorageEngine`](#createstorageengineoptions)
   - [Types](#types)
 - [Advanced Usage](#advanced-usage)
@@ -29,6 +32,8 @@
   - [Inertia Partial Reloads](#inertia-partial-reloads)
   - [Hydration Guard](#hydration-guard)
   - [Loading Indicator with isSyncing](#loading-indicator-with-issyncing)
+  - [Using StateManager without React](#using-statemanager-without-react)
+  - [Building a Custom Driver](#building-a-custom-driver)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -45,6 +50,36 @@ In Inertia.js apps, managing state that needs to live beyond a single component 
 | Cross-component ephemeral state | React Context / Zustand / extra boilerplate | `driver: 'memory'` — automatic |
 
 `kinetics-state` gives you one unified hook — `useKineticsState` — that works exactly like `useState` but handles all the sync logic behind the scenes.
+
+---
+
+## Architecture
+
+kinetics-state is built around three distinct layers, inspired by Laravel's Manager pattern:
+
+```
+useKineticsState (React hook)
+        │ subscribe / setValue
+        ▼
+   StateManager  // framework-agnostic core
+   Init → Hydrate → Change → Sync
+        │                      │
+        │ read / write         │ scheduleVisit (url driver only)
+        ▼                      ▼
+   StateEngine              InertiaAdapter (singleton)
+   UrlDriver                router.visit() + inertia:success
+   IndexedDbDriver
+   MemoryDriver
+```
+
+| Layer | Responsibility |
+|---|---|
+| **StateEngine** (drivers) | Pure storage — only read, write, remove. No framework dependency. |
+| **StateManager** | Lifecycle orchestrator — owns Init → Hydrate → Change → Sync. Framework-agnostic. |
+| **InertiaAdapter** | Singleton interceptor — bridges URL driver writes with `router.visit()` and re-hydrates state on `inertia:success`. |
+| **useKineticsState** | Thin React binding — subscribes to `StateManager` and triggers re-renders. |
+
+> This separation means `StateManager` can be used standalone (without React), and drivers can be tested in complete isolation from Inertia.
 
 ---
 
@@ -112,18 +147,20 @@ Synchronizes state with the browser's URL query string. Ideal for **searchable, 
 
 **How it works:**
 - On mount, reads the initial value from the current URL's query string.
-- On every state update, calls Inertia's `router.visit()` to reflect the new value in the URL.
-- Supports optional **debounce** to avoid triggering a server request on every keystroke.
+- On every state update, `UrlDriver` silently updates the URL via `history.replaceState()` — it does **not** call `router.visit()` directly.
+- `InertiaAdapter` (singleton) intercepts the update and schedules a single debounced `router.visit()`, coalescing multiple simultaneous URL state writes into one request.
+- On `inertia:success`, `InertiaAdapter` notifies registered URL state managers to re-hydrate from the new URL — keeping state in sync on browser Back/Forward navigation.
+- Supports optional **debounce** (`debounceMs`) to control how long to wait before the Inertia request fires.
 - Empty values (`null`, `undefined`, `""`) are automatically removed from the URL.
 
 ```tsx
 const [search, setSearch, { isSyncing }] = useKineticsState('q', {
   driver: 'url',
   defaultValue: '',
-  debounceMs: 500,                          // Waits 500ms before navigating
+  debounceMs: 500, // Waits 500ms before navigating
   inertiaOptions: {
     preserveState: true,
-    only: ['users'],                         // Partial reload — only refetch 'users'
+    only: ['users'], // Partial reload — only refetch 'users'
   },
 });
 ```
@@ -227,9 +264,60 @@ function useKineticsState<T>(
 
 ---
 
+### `StateManager`
+
+The framework-agnostic core engine. Orchestrates the full state lifecycle and notifies subscribers (e.g., React hooks) on every change.
+
+```ts
+class StateManager<T> {
+  constructor(key: string, options: KineticsStateOptions<T>)
+
+  // Lifecycle
+  hydrate(): Promise<void>  // Read initial value from storage
+  setValue(action: T | ((prev: T) => T)): void  // Update value + schedule sync
+  destroy(): void  // Cancel timers and clear listeners
+
+  // Getters
+  getValue(): T
+  getLifecycle(): StateLifecycle // 'hydrating' | 'syncing' | 'idle'
+
+  // Subscription
+  subscribe(listener: StateManagerListener<T>): () => void  // Returns unsubscribe fn
+}
+```
+
+See [Using StateManager without React](#using-statemanager-without-react) for a standalone usage example.
+
+---
+
+### `InertiaAdapter`
+
+A singleton that bridges `UrlDriver` writes with Inertia's navigation lifecycle. Attached automatically the first time a `url` driver state is initialized — no manual setup required.
+
+```ts
+class InertiaAdapter {
+  static getInstance(): InertiaAdapter   // Returns (or creates) the singleton
+  static reset(): void  // Tears down the singleton (useful in tests)
+
+  // Schedule a router.visit() after UrlDriver writes to the URL.
+  // Multiple calls in the same tick are coalesced into a single visit.
+  scheduleVisit(url: string, inertiaOptions?: Partial<VisitOptions>): void
+
+  // Register a callback to re-hydrate state after inertia:success.
+  // Returns an unregister function.
+  onSuccess(callback: () => void): () => void
+
+  detach(): void   // Remove the inertia:success event listener
+}
+```
+
+**Visit Coalescing:** If multiple `url` driver states update within the same synchronous tick, `InertiaAdapter` fires only **one** `router.visit()` — not one per state change. This prevents unnecessary network requests.
+
+---
+
 ### `createStorageEngine(options)`
 
-Factory function that instantiates the appropriate driver class based on `options.driver`. Used internally by `useKineticsState` but available for advanced use cases or custom hooks.
+Factory function that instantiates the appropriate driver class based on `options.driver`. Used internally by `StateManager` but available for advanced use cases.
 
 ```ts
 function createStorageEngine<T>(options: KineticsStateOptions<T>): StateEngine<T>
@@ -329,6 +417,23 @@ interface KineticsStateMeta {
 }
 ```
 
+#### `StateLifecycle`
+
+Represents the current phase of a `StateManager`'s lifecycle.
+
+```ts
+type StateLifecycle = 'hydrating' | 'syncing' | 'idle';
+//                     ↑ on mount    ↑ writing    ↑ stable
+```
+
+#### `StateManagerListener<T>`
+
+Callback type for subscribing to `StateManager` changes.
+
+```ts
+type StateManagerListener<T> = (value: T, lifecycle: StateLifecycle) => void;
+```
+
 #### `StateEngine<T>`
 
 The contract that all drivers implement. You can implement your own driver by satisfying this interface.
@@ -374,7 +479,7 @@ const [search, setSearch, { isSyncing }] = useKineticsState('search', {
   inertiaOptions: {
     preserveState: true,
     preserveScroll: true,
-    only: ['users'],        // Only the 'users' prop is re-fetched from the server
+    only: ['users'], // Only the 'users' prop is re-fetched from the server
   },
 });
 ```
@@ -426,6 +531,37 @@ return (
 
 ---
 
+### Using StateManager without React
+
+`StateManager` is framework-agnostic — you can use it in any JavaScript environment (Vue, Svelte, vanilla JS, Node.js scripts, etc.):
+
+```ts
+import { StateManager } from '@fivezerogroup/kinetics-state';
+
+const manager = new StateManager('search', {
+  driver: 'memory',
+  defaultValue: '',
+});
+
+// Subscribe to changes
+const unsubscribe = manager.subscribe((value, lifecycle) => {
+  console.log('State changed:', value, '| Lifecycle:', lifecycle);
+});
+
+// Hydrate from storage
+await manager.hydrate();
+
+// Update state
+manager.setValue('Alice');           // Direct value
+manager.setValue((prev) => prev + '!'); // Updater function
+
+// Cleanup
+unsubscribe();
+manager.destroy();
+```
+
+---
+
 ### Building a Custom Driver
 
 You can extend the library with a custom driver by implementing the `StateEngine<T>` interface:
@@ -448,6 +584,16 @@ class SessionStorageDriver<T> implements StateEngine<T> {
     sessionStorage.removeItem(key);
   }
 }
+```
+
+Pair it with `StateManager` directly to get the full lifecycle for free:
+
+```ts
+import { StateManager } from '@fivezerogroup/kinetics-state';
+
+// Use any StateEngine-compatible driver with StateManager
+const manager = new StateManager('key', { driver: 'memory', defaultValue: '' });
+// Override the internal engine if needed for advanced use cases
 ```
 
 ---

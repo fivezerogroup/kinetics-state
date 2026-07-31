@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createStorageEngine } from "../factory";
+import { InertiaAdapter } from "../adapters/InertiaAdapter";
+import { StateManager } from "../StateManager";
 import type {
 	KineticsStateMeta,
 	KineticsStateOptions,
-	StateEngine,
+	StateLifecycle,
 } from "../types";
 
 type SetStateAction<T> = T | ((prev: T) => T);
@@ -13,6 +14,9 @@ type SetStateAction<T> = T | ((prev: T) => T);
  *
  * Works just like the standard React `useState`, but the state is automatically
  * synchronized to the URL, IndexedDB, or Memory based on the selected driver.
+ *
+ * Internally delegates all lifecycle management to `StateManager` — this hook
+ * is purely a thin React binding layer (subscribe → render).
  *
  * @template T - The state data type.
  * @param key - Unique key to store the state (must be unique per page/component).
@@ -47,101 +51,68 @@ export function useKineticsState<T>(
 	key: string,
 	options: KineticsStateOptions<T>,
 ): [T, (action: SetStateAction<T>) => void, KineticsStateMeta] {
-	const [value, setValueInternal] = useState<T>(options.defaultValue);
-	const [isSyncing, setIsSyncing] = useState(false);
-	const [isHydrated, setIsHydrated] = useState(false);
-
-	// Lazy init engine — created only once
-	const engineRef = useRef<StateEngine<T> | null>(null);
-	if (engineRef.current === null) {
-		engineRef.current = createStorageEngine<T>(options);
+	// Lazy-init StateManager — created only once per key
+	const managerRef = useRef<StateManager<T> | null>(null);
+	if (managerRef.current === null) {
+		managerRef.current = new StateManager(key, options);
 	}
 
-	// Mirror the latest value to avoid stale closure in setState
-	const valueRef = useRef<T>(options.defaultValue);
-
-	// Ref to options so setState always reads the latest options without needing them as a dependency
+	// Ref to always read the latest options inside effects without adding them to deps
 	const optionsRef = useRef<KineticsStateOptions<T>>(options);
+	optionsRef.current = options;
+
+	// Derive initial UI state from the manager's current values
+	const [snapshot, setSnapshot] = useState<{
+		value: T;
+		lifecycle: StateLifecycle;
+	}>(() => ({
+		value: managerRef.current?.getValue() ?? options.defaultValue,
+		lifecycle: "hydrating",
+	}));
+
+	// Mount: subscribe to manager + trigger hydration + register inertia:success re-hydration
 	useEffect(() => {
-		optionsRef.current = options;
-	});
+		const manager = managerRef.current;
+		if (!manager) return;
 
-	// Debounce timer — stored in a ref so it can be cancelled (cancel on unmount)
-	const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+		// Subscribe — any state/lifecycle change triggers a React re-render
+		const unsubscribe = manager.subscribe((value, lifecycle) => {
+			setSnapshot({ value, lifecycle });
+		});
 
-	// Hydration — read initial value from storage on mount
-	useEffect(() => {
-		const engine = engineRef.current;
-		if (!engine) return;
+		// Trigger initial hydration from storage
+		void manager.hydrate();
 
-		const hydrate = async () => {
-			const raw = await Promise.resolve(engine.read(key));
-
-			if (raw !== null && raw !== undefined) {
-				valueRef.current = raw as T;
-				setValueInternal(raw as T);
-			}
-
-			setIsHydrated(true);
-		};
-
-		void hydrate();
-
-		// Cleanup: cancel any pending debounce when the component unmounts
-		return () => {
-			if (debounceTimerRef.current !== null) {
-				clearTimeout(debounceTimerRef.current);
-				debounceTimerRef.current = null;
-			}
-		};
-	}, [key]); // Re-hydrate only if the key changes
-
-	// Setter — update React state + write to storage
-	const setState = useCallback(
-		(action: SetStateAction<T>) => {
-			// Resolve new value — support updater function (just like native useState)
-			const newValue =
-				typeof action === "function"
-					? (action as (prev: T) => T)(valueRef.current)
-					: action;
-
-			// Update React state and valueRef synchronously (UI is immediately responsive)
-			valueRef.current = newValue;
-			setValueInternal(newValue);
-
-			// Schedule write to storage
-			const opts = optionsRef.current;
-			const engine = engineRef.current;
-			if (!engine) return;
-			const debounceMs = opts.driver === "url" ? (opts.debounceMs ?? 0) : 0;
-
-			// Cancel previous debounce timer (if any)
-			if (debounceTimerRef.current !== null) {
-				clearTimeout(debounceTimerRef.current);
-				debounceTimerRef.current = null;
-			}
-
-			if (debounceMs > 0) {
-				// Debounced Mode (for URL driver)
-				setIsSyncing(true);
-
-				debounceTimerRef.current = setTimeout(async () => {
-					debounceTimerRef.current = null;
-					await Promise.resolve(engine.write(key, newValue, opts));
-					setIsSyncing(false);
-				}, debounceMs);
-			} else {
-				// Immediate Mode
-				const result = engine.write(key, newValue, opts);
-
-				if (result instanceof Promise) {
-					setIsSyncing(true);
-					void result.then(() => setIsSyncing(false));
+		// For URL driver: re-hydrate whenever Inertia navigates successfully.
+		// This keeps URL state in sync when the user clicks browser Back/Forward.
+		let unregisterSuccess: (() => void) | undefined;
+		if (optionsRef.current.driver === "url") {
+			unregisterSuccess = InertiaAdapter.getInstance().onSuccess(() => {
+				// Only re-hydrate if there's no pending debounce (avoids race conditions)
+				if (manager.getLifecycle() !== "syncing") {
+					void manager.hydrate();
 				}
-			}
-		},
-		[key],
-	);
+			});
+		}
 
-	return [value, setState, { isSyncing, isHydrated }];
+		return () => {
+			unsubscribe();
+			unregisterSuccess?.();
+			manager.destroy();
+		};
+	}, []);
+
+	// Stable setter — wraps manager.setValue for React consumers
+	const setValue = useCallback((action: SetStateAction<T>) => {
+		managerRef.current?.setValue(action);
+	}, []);
+
+	return [
+		snapshot.value,
+		setValue,
+		{
+			isSyncing: snapshot.lifecycle === "syncing",
+			isHydrated: snapshot.lifecycle !== "hydrating",
+		},
+	];
 }

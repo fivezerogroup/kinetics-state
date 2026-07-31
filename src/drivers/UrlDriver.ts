@@ -1,4 +1,3 @@
-import { router } from "@inertiajs/core";
 import type {
 	KineticsStateOptions,
 	StateEngine,
@@ -20,7 +19,8 @@ function safeJsonDeserialize<T>(raw: string): T {
  * UrlDriver — synchronizes state with the URL query string.
  *
  * - State is STORED in the URL (bookmarkable & shareable).
- * - Every write triggers Inertia's `router.visit()` (with debounce from the hook).
+ * - `write()` performs a silent `history.replaceState()` — it does NOT trigger
+ *   an Inertia request directly. Inertia navigation is handled by `InertiaAdapter`.
  * - Supports custom serialize/deserialize for non-string data types.
  *
  * @template T - The type of data being stored.
@@ -45,6 +45,13 @@ export class UrlDriver<T = unknown> implements StateEngine<T> {
 		return this.deserializeFn(raw);
 	}
 
+	/**
+	 * Writes the value to the URL query string via `history.replaceState()`.
+	 *
+	 * This is a silent update — it does NOT trigger a full Inertia visit.
+	 * The `InertiaAdapter` is responsible for scheduling the actual `router.visit()`
+	 * after the URL has been updated.
+	 */
 	write(key: string, value: T, options: KineticsStateOptions<T>): void {
 		if (typeof window === "undefined") return;
 		if (options.driver !== "url") return;
@@ -69,12 +76,8 @@ export class UrlDriver<T = unknown> implements StateEngine<T> {
 			? `${window.location.pathname}?${queryString}`
 			: window.location.pathname;
 
-		router.visit(newUrl, {
-			preserveState: true,
-			preserveScroll: true,
-			replace: true,
-			...urlOptions.inertiaOptions,
-		});
+		// Silent URL update — InertiaAdapter will handle router.visit()
+		window.history.replaceState(null, "", newUrl);
 	}
 
 	remove(key: string): void {
@@ -88,10 +91,6 @@ export class UrlDriver<T = unknown> implements StateEngine<T> {
 			? `${window.location.pathname}?${queryString}`
 			: window.location.pathname;
 
-		router.visit(newUrl, {
-			preserveState: true,
-			preserveScroll: true,
-			replace: true,
-		});
+		window.history.replaceState(null, "", newUrl);
 	}
 }

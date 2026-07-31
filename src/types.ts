@@ -4,6 +4,27 @@ import type { VisitOptions } from "@inertiajs/core";
 
 export type StorageDriver = "url" | "indexeddb" | "memory";
 
+// State Lifecycle
+
+/**
+ * Represents the current lifecycle phase of a managed state:
+ * - `hydrating` — initial read from storage (on mount)
+ * - `syncing`   — write to storage is in-flight or debounced
+ * - `idle`      — stable, no pending I/O
+ */
+export type StateLifecycle = "hydrating" | "syncing" | "idle";
+
+/**
+ * Callback fired by StateManager whenever the value or lifecycle changes.
+ * Used by framework bindings (e.g., React hook) to trigger re-renders.
+ */
+export type StateManagerListener<T> = (
+	value: T,
+	lifecycle: StateLifecycle,
+) => void;
+
+// Driver Options
+
 interface BaseOptions<T> {
 	defaultValue: T;
 
@@ -37,11 +58,15 @@ export type KineticsStateOptions<T> =
 	| IndexedDbDriverOptions<T>
 	| MemoryDriverOptions<T>;
 
+// State Meta (public API surface)
+
 export interface KineticsStateMeta {
 	isSyncing: boolean;
 
 	isHydrated: boolean;
 }
+
+// Driver Interface (StateEngine)
 
 export interface StateEngine<T = unknown> {
 	/**

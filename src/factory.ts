@@ -7,7 +7,7 @@ import type { KineticsStateOptions, StateEngine } from "./types";
  * Factory function that creates the appropriate driver instance
  * based on the `driver` configuration inside `options`.
  *
- * This pattern ensures the Core Hook doesn't need to use `if/switch`
+ * This pattern ensures `StateManager` doesn't need to use `if/switch`
  * directly — just call the factory and the driver is ready to use.
  *
  * @template T - The type of data to be stored by the driver.
