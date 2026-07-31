@@ -57,7 +57,9 @@ export class UrlDriver<T = unknown> implements StateEngine<T> {
 		if (options.driver !== "url") return;
 
 		const urlOptions = options as UrlDriverOptions<T>;
-		const serialize = urlOptions.serialize ?? ((v) => JSON.stringify(v));
+		const serialize =
+			urlOptions.serialize ??
+			((v) => (typeof v === "string" ? v : JSON.stringify(v)));
 
 		const params = new URLSearchParams(window.location.search);
 
