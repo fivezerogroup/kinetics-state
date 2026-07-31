@@ -59,6 +59,7 @@ export class StateManager<T> {
 	 */
 	async hydrate(): Promise<void> {
 		this.setLifecycle("hydrating");
+		this.notifyListeners();
 
 		const raw = await Promise.resolve(this.engine.read(this.key));
 
@@ -99,7 +100,7 @@ export class StateManager<T> {
 	 */
 	private scheduleSync(value: T): void {
 		const debounceMs =
-			this.options.driver === "url" ? (this.options.debounceMs ?? 0) : 0;
+			"debounceMs" in this.options ? (this.options.debounceMs ?? 0) : 0;
 
 		// Cancel any pending sync
 		if (this.debounceTimer !== null) {
@@ -109,6 +110,7 @@ export class StateManager<T> {
 
 		if (debounceMs > 0) {
 			this.setLifecycle("syncing");
+			this.notifyListeners();
 
 			this.debounceTimer = setTimeout(() => {
 				this.debounceTimer = null;
@@ -128,6 +130,7 @@ export class StateManager<T> {
 
 		if (result instanceof Promise) {
 			this.setLifecycle("syncing");
+			this.notifyListeners();
 			await result;
 		}
 

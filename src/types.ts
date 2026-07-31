@@ -45,12 +45,16 @@ export interface IndexedDbDriverOptions<T> extends BaseOptions<T> {
 	driver: "indexeddb";
 
 	storagePrefix?: string;
+
+	debounceMs?: number;
 }
 
 export interface MemoryDriverOptions<T> extends BaseOptions<T> {
 	driver: "memory";
 
 	storagePrefix?: string;
+
+	debounceMs?: number;
 }
 
 export type KineticsStateOptions<T> =
