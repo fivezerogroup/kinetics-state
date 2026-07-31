@@ -11,11 +11,6 @@ vi.mock("../src/adapters/InertiaAdapter", () => ({
 	},
 }));
 
-// Mock @inertiajs/core — UrlDriver indirectly requires it (but won't call visit)
-vi.mock("@inertiajs/core", () => ({
-	router: { visit: vi.fn() },
-}));
-
 describe("StateManager", () => {
 	beforeEach(() => {
 		window.history.replaceState({}, "", "/");

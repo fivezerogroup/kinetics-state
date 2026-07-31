@@ -1,20 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InertiaAdapter } from "../src/adapters/InertiaAdapter";
 
-// Mock @inertiajs/core
-vi.mock("@inertiajs/core", () => ({
-	router: {
-		visit: vi.fn(),
-	},
-}));
-
-import { router } from "@inertiajs/core";
+// Mock router — disimulasikan seperti yang diinjeksi oleh framework binding
+// (misal: `router` dari `@inertiajs/react` atau `@inertiajs/vue3`)
+const mockRouter = {
+	visit: vi.fn(),
+};
 
 describe("InertiaAdapter", () => {
 	beforeEach(() => {
-		// Reset singleton between tests
+		// Reset singleton dan router ref antara test
 		InertiaAdapter.reset();
-		vi.mocked(router.visit).mockClear();
+		mockRouter.visit.mockClear();
 	});
 
 	afterEach(() => {
@@ -32,22 +29,63 @@ describe("InertiaAdapter", () => {
 		});
 	});
 
+	// setRouter
+
+	describe("setRouter()", () => {
+		it("harus menyimpan router yang diinjeksi", async () => {
+			vi.useFakeTimers();
+
+			InertiaAdapter.setRouter(mockRouter);
+			const adapter = InertiaAdapter.getInstance();
+			adapter.scheduleVisit("http://localhost/?q=test");
+
+			vi.advanceTimersByTime(0);
+			await Promise.resolve();
+
+			expect(mockRouter.visit).toHaveBeenCalledTimes(1);
+
+			vi.useRealTimers();
+		});
+
+		it("harus menimpa router lama jika dipanggil ulang", async () => {
+			vi.useFakeTimers();
+
+			const firstRouter = { visit: vi.fn() };
+			const secondRouter = { visit: vi.fn() };
+
+			InertiaAdapter.setRouter(firstRouter);
+			InertiaAdapter.setRouter(secondRouter);
+
+			const adapter = InertiaAdapter.getInstance();
+			adapter.scheduleVisit("http://localhost/?q=test");
+
+			vi.advanceTimersByTime(0);
+			await Promise.resolve();
+
+			expect(firstRouter.visit).not.toHaveBeenCalled();
+			expect(secondRouter.visit).toHaveBeenCalledTimes(1);
+
+			vi.useRealTimers();
+		});
+	});
+
 	// scheduleVisit
 
 	describe("scheduleVisit()", () => {
 		it("harus memanggil router.visit() setelah 0ms timer", async () => {
 			vi.useFakeTimers();
 
+			InertiaAdapter.setRouter(mockRouter);
 			const adapter = InertiaAdapter.getInstance();
 			adapter.scheduleVisit("http://localhost/?q=test");
 
 			// Belum dipanggil sebelum timer fire
-			expect(router.visit).not.toHaveBeenCalled();
+			expect(mockRouter.visit).not.toHaveBeenCalled();
 
 			vi.advanceTimersByTime(0);
 			await Promise.resolve(); // flush microtasks
 
-			expect(router.visit).toHaveBeenCalledWith(
+			expect(mockRouter.visit).toHaveBeenCalledWith(
 				"http://localhost/?q=test",
 				expect.objectContaining({
 					preserveState: true,
@@ -62,6 +100,7 @@ describe("InertiaAdapter", () => {
 		it("harus meneruskan inertiaOptions ke router.visit()", async () => {
 			vi.useFakeTimers();
 
+			InertiaAdapter.setRouter(mockRouter);
 			const adapter = InertiaAdapter.getInstance();
 			adapter.scheduleVisit("http://localhost/?q=test", {
 				only: ["users"],
@@ -71,7 +110,7 @@ describe("InertiaAdapter", () => {
 			vi.advanceTimersByTime(0);
 			await Promise.resolve();
 
-			const callArgs = vi.mocked(router.visit).mock.calls[0][1] as Record<
+			const callArgs = mockRouter.visit.mock.calls[0][1] as Record<
 				string,
 				unknown
 			>;
@@ -83,6 +122,7 @@ describe("InertiaAdapter", () => {
 		it("harus menggabungkan beberapa scheduleVisit() menjadi satu router.visit()", async () => {
 			vi.useFakeTimers();
 
+			InertiaAdapter.setRouter(mockRouter);
 			const adapter = InertiaAdapter.getInstance();
 			adapter.scheduleVisit("http://localhost/?q=a");
 			adapter.scheduleVisit("http://localhost/?q=b");
@@ -92,11 +132,31 @@ describe("InertiaAdapter", () => {
 			await Promise.resolve();
 
 			// Hanya satu visit yang boleh terjadi (yang terakhir)
-			expect(router.visit).toHaveBeenCalledTimes(1);
-			expect(vi.mocked(router.visit).mock.calls[0][0]).toBe(
-				"http://localhost/?q=c",
+			expect(mockRouter.visit).toHaveBeenCalledTimes(1);
+			expect(mockRouter.visit.mock.calls[0][0]).toBe("http://localhost/?q=c");
+
+			vi.useRealTimers();
+		});
+
+		it("harus mengeluarkan warning dan tidak memanggil visit jika router belum di-set", async () => {
+			vi.useFakeTimers();
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			// Tidak memanggil setRouter()
+			const adapter = InertiaAdapter.getInstance();
+			adapter.scheduleVisit("http://localhost/?q=test");
+
+			vi.advanceTimersByTime(0);
+			await Promise.resolve();
+
+			expect(mockRouter.visit).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"[kinetics-state] InertiaAdapter.setRouter() was not called",
+				),
 			);
 
+			warnSpy.mockRestore();
 			vi.useRealTimers();
 		});
 	});
@@ -163,6 +223,31 @@ describe("InertiaAdapter", () => {
 			const after = InertiaAdapter.getInstance();
 
 			expect(before).not.toBe(after);
+		});
+
+		it("harus membersihkan routerRef setelah reset", async () => {
+			vi.useFakeTimers();
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			InertiaAdapter.setRouter(mockRouter);
+			InertiaAdapter.reset(); // routerRef harus dikosongkan
+
+			const adapter = InertiaAdapter.getInstance();
+			adapter.scheduleVisit("http://localhost/?q=test");
+
+			vi.advanceTimersByTime(0);
+			await Promise.resolve();
+
+			// Router sudah di-clear, visit tidak boleh dipanggil
+			expect(mockRouter.visit).not.toHaveBeenCalled();
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"[kinetics-state] InertiaAdapter.setRouter() was not called",
+				),
+			);
+
+			warnSpy.mockRestore();
+			vi.useRealTimers();
 		});
 	});
 });

@@ -1,3 +1,4 @@
+import { router } from "@inertiajs/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InertiaAdapter } from "../adapters/InertiaAdapter";
 import { StateManager } from "../StateManager";
@@ -87,6 +88,10 @@ export function useKineticsState<T>(
 		// This keeps URL state in sync when the user clicks browser Back/Forward.
 		let unregisterSuccess: (() => void) | undefined;
 		if (optionsRef.current.driver === "url") {
+			// Inject the router from the React binding — ensures the same singleton
+			// instance is used regardless of how node_modules are resolved.
+			InertiaAdapter.setRouter(router);
+
 			unregisterSuccess = InertiaAdapter.getInstance().onSuccess(() => {
 				// Only re-hydrate if there's no pending debounce (avoids race conditions)
 				if (manager.getLifecycle() !== "syncing") {

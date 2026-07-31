@@ -1,7 +1,14 @@
 import type { VisitOptions } from "@inertiajs/core";
-import { router } from "@inertiajs/core";
 
 type HydrationCallback = () => void;
+
+/**
+ * Minimal router interface — compatible with both `@inertiajs/react` and `@inertiajs/vue3`.
+ * Injected by the framework binding via `InertiaAdapter.setRouter()`.
+ */
+interface RouterLike {
+	visit(url: string, options?: Partial<VisitOptions>): void;
+}
 
 /**
  * InertiaAdapter — singleton that bridges kinetics-state with Inertia's lifecycle.
@@ -20,6 +27,9 @@ type HydrationCallback = () => void;
  */
 export class InertiaAdapter {
 	private static instance: InertiaAdapter | null = null;
+
+	/** Injected by the framework binding (React/Vue). Set via `setRouter()`. */
+	private static routerRef: RouterLike | null = null;
 
 	private visitTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingUrl: string | null = null;
@@ -40,6 +50,20 @@ export class InertiaAdapter {
 			InertiaAdapter.instance.attach();
 		}
 		return InertiaAdapter.instance;
+	}
+
+	/**
+	 * Injects the Inertia router from the framework binding.
+	 *
+	 * Must be called once before any URL-driver state is used:
+	 * - React: `InertiaAdapter.setRouter(router)` — router from `@inertiajs/react`
+	 * - Vue:   `InertiaAdapter.setRouter(router)` — router from `@inertiajs/vue3`
+	 *
+	 * This avoids dual-instance issues caused by each package resolving
+	 * its own copy of `@inertiajs/core` from node_modules.
+	 */
+	static setRouter(router: RouterLike): void {
+		InertiaAdapter.routerRef = router;
 	}
 
 	// Visit Scheduling
@@ -67,7 +91,16 @@ export class InertiaAdapter {
 			this.visitTimer = null;
 			if (this.pendingUrl === null) return;
 
-			router.visit(this.pendingUrl, {
+			if (InertiaAdapter.routerRef === null) {
+				console.warn(
+					"[kinetics-state] InertiaAdapter.setRouter() was not called. " +
+						"Import and pass the router from your framework binding " +
+						"(e.g. `import { router } from '@inertiajs/react'`).",
+				);
+				return;
+			}
+
+			InertiaAdapter.routerRef.visit(this.pendingUrl, {
 				preserveState: true,
 				preserveScroll: true,
 				replace: true,
@@ -129,6 +162,7 @@ export class InertiaAdapter {
 	static reset(): void {
 		InertiaAdapter.instance?.detach();
 		InertiaAdapter.instance = null;
+		InertiaAdapter.routerRef = null;
 	}
 
 	// Internals
